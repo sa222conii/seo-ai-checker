@@ -1,6 +1,7 @@
 import { NextRequest, NextResponse } from "next/server";
 import OpenAI from "openai";
 import { kv } from "@vercel/kv";
+import { verifyIdToken } from "@/lib/firebase-admin";
 
 const openai = new OpenAI({
     apiKey: process.env.OPENAI_API_KEY,
@@ -10,11 +11,14 @@ const openai = new OpenAI({
 const localRateLimitStore = new Map<string, { count: number; resetTime: number }>();
 
 // Rate limiting function using Vercel KV (with local fallback)
-async function checkRateLimit(ip: string): Promise<{ allowed: boolean; remaining: number }> {
+async function checkRateLimit(ip: string, uid?: string): Promise<{ allowed: boolean; remaining: number }> {
     const now = Date.now();
-    const dailyLimit = 5;
+    // Logged-in users get 30, IP-based (guests) get 5
+    const dailyLimit = uid ? 30 : 5;
     const resetTime = new Date().setHours(24, 0, 0, 0); // Reset at midnight
-    const key = `rate_limit:${ip}`;
+
+    // key depends on whether we have a UID
+    const key = uid ? `rate_limit:user:${uid}` : `rate_limit:${ip}`;
 
     try {
         // Try to use Vercel KV (production)
@@ -35,10 +39,12 @@ async function checkRateLimit(ip: string): Promise<{ allowed: boolean; remaining
     } catch (error) {
         // Fallback to in-memory for local development
         console.log("Using in-memory rate limiting (local development mode)");
-        const userData = localRateLimitStore.get(ip);
+        // Use a composite key for local store to differentiate
+        const localKey = uid ? `user:${uid}` : `ip:${ip}`;
+        const userData = localRateLimitStore.get(localKey);
 
         if (!userData || now > userData.resetTime) {
-            localRateLimitStore.set(ip, { count: 1, resetTime });
+            localRateLimitStore.set(localKey, { count: 1, resetTime });
             return { allowed: true, remaining: dailyLimit - 1 };
         }
 
@@ -47,7 +53,7 @@ async function checkRateLimit(ip: string): Promise<{ allowed: boolean; remaining
         }
 
         userData.count++;
-        localRateLimitStore.set(ip, userData);
+        localRateLimitStore.set(localKey, userData);
         return { allowed: true, remaining: dailyLimit - userData.count };
     }
 }
@@ -57,12 +63,24 @@ export async function POST(request: NextRequest) {
         // Get IP address for rate limiting
         const ip = request.headers.get("x-forwarded-for") || "unknown";
 
+        // Check for Auth header
+        const authHeader = request.headers.get("Authorization");
+        let uid: string | undefined = undefined;
+
+        if (authHeader && authHeader.startsWith("Bearer ")) {
+            const token = authHeader.split("Bearer ")[1];
+            const decodedToken = await verifyIdToken(token);
+            if (decodedToken) {
+                uid = decodedToken.uid;
+            }
+        }
+
         // Check rate limit
-        const { allowed, remaining } = await checkRateLimit(ip);
+        const { allowed, remaining } = await checkRateLimit(ip, uid);
 
         if (!allowed) {
             return NextResponse.json(
-                { error: "1日の利用回数制限に達しました。明日またお試しください。" },
+                { error: `1日の利用回数制限（${uid ? 30 : 5}回）に達しました。明日またお試しください。` },
                 { status: 429 }
             );
         }
