@@ -3,7 +3,7 @@
 import { useState } from "react";
 import { useAuth } from "@/contexts/AuthContext";
 import Link from "next/link";
-import { collection, addDoc, serverTimestamp } from "firebase/firestore";
+import { collection, addDoc, serverTimestamp, query, where, getDocs, Timestamp } from "firebase/firestore";
 import { db } from "@/lib/firebase";
 
 export default function Home() {
@@ -39,6 +39,21 @@ export default function Home() {
                 }
 
                 localStorage.setItem('seo_count', (count + 1).toString());
+            } else {
+                // Authenticated user limit check (10/day)
+                const todayCurrent = new Date();
+                todayCurrent.setHours(0, 0, 0, 0);
+                const todayTimestamp = Timestamp.fromDate(todayCurrent);
+
+                const q = query(
+                    collection(db, "users", user.uid, "history"),
+                    where("createdAt", ">=", todayTimestamp)
+                );
+                const querySnapshot = await getDocs(q);
+
+                if (querySnapshot.size >= 10) {
+                    throw new Error("本日の分析回数上限（10回）に達しました。明日またご利用ください。");
+                }
             }
 
             const response = await fetch("/api/analyze", {
@@ -197,7 +212,15 @@ export default function Home() {
                             <div className="mt-6 p-4 bg-yellow-500/10 border border-yellow-500/20 rounded-lg">
                                 <p className="text-sm text-yellow-200 flex items-center gap-2">
                                     <span>⚡</span>
-                                    1日3回まで無料で利用可能（ログインで制限解除）
+                                    1日3回まで無料で利用可能（ログインで制限解除: 10回/日）
+                                </p>
+                            </div>
+                        )}
+                        {user && (
+                            <div className="mt-6 p-4 bg-blue-500/10 border border-blue-500/20 rounded-lg hidden">
+                                <p className="text-sm text-blue-200 flex items-center gap-2">
+                                    <span>💎</span>
+                                    ログイン中: 1日10回まで利用可能
                                 </p>
                             </div>
                         )}
